@@ -48,7 +48,18 @@ def main():
             collect_list("url").alias("error_urls")
         )
     
-    # Sauvegarde des erreurs dans un fichier
+    # on déclenche des alertes si on a trop d'erreurs 
+    alerts = windowed_metrics \
+        .filter(col("error_count") > 100) \
+        .withColumn("alert",lit("ALERTE : Nombre d'erreurs élevé"))
+    alert_query=alerts.writeStream \
+        .outputMode("append") \
+        .format("console") \
+        .option("truncate",False) \
+        .trigger(processingTime="10 seconds") \
+        .start()
+
+    # Sauvegarde des erreurs brutes dnas un fichier
     error_query = logs.writeStream \
         .outputMode("append") \
         .format("json") \
@@ -58,18 +69,18 @@ def main():
         .start()
     
     # Affichage des métriques en temps réel
-    # ou append 
-    # à deboguer les windowed_metrics
-    metrics_query = logs.writeStream \
-        .outputMode("append") \
+    metrics_query = windowed_metrics \
+        .writeStream \
+        .outputMode("update") \
         .format("console") \
         .option("truncate", False) \
-        .trigger(processingTime="3 seconds") \
+        .trigger(processingTime="10 seconds") \
         .start()
     
     # Attendre l'arrêt des streams
     error_query.awaitTermination()
     metrics_query.awaitTermination()
+    alert_query.awaitTermination()
 
 if __name__ == "__main__":
     main()

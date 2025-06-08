@@ -16,7 +16,7 @@ python .\utils\genlogs_v2.py --urls 1000 --rate 1000 --format json #1000 logs pa
 python .\utils\genlogs_v2.py # 1 log par seconde
 ```
  
-### Lancement avec redirection ver netcat pour creer un stream TCP
+### Lancement avec redirection vers netcat pour creer un stream TCP
 ```bash
 python ./utils/genlogs_v2.py --urls 1000 --rate 1000 --format json | nc -lk 9999
 ```
@@ -38,13 +38,20 @@ Le script `log_analyzer.py` analyse en temps réel les logs générés et effect
 
 ### Lancement de l'analyse
 
-```bash
-# Terminal 1 : Génération et streaming des logs
-python ./utils/genlogs_v2.py --urls 1000 --rate 100 --format json | nc -lk 9999
+Il faut lancer deux terminaux distincts.
 
-# Terminal 2 : Analyse Spark Streaming
+Dans le premier, la commande suivante doit être jouée :
+```bash
+python ./utils/genlogs_v2.py --urls 1000 --rate 100 --format json | nc -lk 9999
+```
+- La partie avant le symbole `|` génère les logs en continu au format JSON (ici 100 logs/sec avec 1000 URLs possibles)
+- La partie suivant le symbole `|` sert à rediriger ces logs vers le flux TCP écoutant sur le port 9999. Le flux restera actif tant qu'il n'est pas arrêté manuellement, ce qui est important pour lancer l'analyse Spark Streaming. (d'où la nécessité de lancer cette commande avant de lancer l'analyse Spark Streaming!)
+
+Puis dans le second terminal, la commande suivante peut être jouée :
+```bash
 spark-submit ./spark-streaming/log_analyzer.py
 ```
+C'est celle-ci qui va lancer l'analyse Spark Streaming.
 
 ### Sortie attendue
 - **Console** : Métriques agrégées par fenêtre temporelle et status code

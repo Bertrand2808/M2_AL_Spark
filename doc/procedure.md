@@ -15,11 +15,23 @@ Le script génère par défaut des logs en JSON (plus facile à parser) avec :
 python .\utils\genlogs_v2.py --urls 1000 --rate 1000 --format json #1000 logs par seconde
 python .\utils\genlogs_v2.py # 1 log par seconde
 ```
- 
+
 ### Lancement avec redirection vers netcat pour creer un stream TCP
 ```bash
 python ./utils/genlogs_v2.py --urls 1000 --rate 1000 --format json | nc -lk 9999
 ```
+
+ou dans ubuntu :
+```bash
+python3 ./utils/genlogs_v2.py --urls 1000 --rate 1000 --format json | nc -lk 9999
+```
+
+pour générer uniquement des erreurs 500 :
+
+```bash
+python3 ./utils/genlogs_v2.py --urls 1000 --rate 1000 --format json --status-dist 0 0 100 | nc -lk 9999
+```
+
 
 ## Analyse des logs avec Spark Streaming
 

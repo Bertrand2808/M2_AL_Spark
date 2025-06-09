@@ -47,11 +47,32 @@ python ./utils/genlogs_v2.py --urls 1000 --rate 100 --format json | nc -lk 9999
 - La partie avant le symbole `|` génère les logs en continu au format JSON (ici 100 logs/sec avec 1000 URLs possibles)
 - La partie suivant le symbole `|` sert à rediriger ces logs vers le flux TCP écoutant sur le port 9999. Le flux restera actif tant qu'il n'est pas arrêté manuellement, ce qui est important pour lancer l'analyse Spark Streaming. (d'où la nécessité de lancer cette commande avant de lancer l'analyse Spark Streaming!)
 
-Puis dans le second terminal, la commande suivante peut être jouée :
+Ce terminal doit rester actif durant l'analyse, il ne faut donc pas le fermer.
+
+Dans le second terminal, vous avez deux options : 
+1. via le script `run_spark_streaming.sh` qui nettoie les anciens fichiers et lance l'analyse proprement
+2. via `spark-submit` directement
+
+**Option 1 (recommandée) - Via le script `run_spark_streaming.sh`**
+Avant d'essayer d'exécuter le script, il faut le rendre exécutable (à faire qu'une seule fois !)
+```bash
+chmod +x ./run_spark_streaming.sh
+```
+Une fois que le script est exécutable, il peut être exécuté :
+```bash
+./run_spark_streaming.sh
+```
+Si Spark n'est pas dans le PATH, le chemin peut être indiqué dans la commande :
+```bash
+./run_spark_streaming.sh ~/spark-3.5.5-bin-hadoop3/bin/spark-submit
+```
+Ce script supprime les anciens fichiers `output/errors/` et `checkpoint/errors/` qui peuvent parfois être source de problème, puis exécute le script `log_analyzer.py` via `spark_submit`.
+
+**Option 2 - Via `spark_submit`**
 ```bash
 spark-submit ./spark-streaming/log_analyzer.py
 ```
-C'est celle-ci qui va lancer l'analyse Spark Streaming.
+C'est celle-ci qui va lancer l'analyse Spark Streaming, mais en cas de problème il faudra supprimer les répertoires `output/errors/` et `checkpoint/errors/` à la main.
 
 ### Sortie attendue
 - **Console** : Métriques agrégées par fenêtre temporelle et status code

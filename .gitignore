@@ -1,4 +1,4 @@
 ./spark*
 spark-3.5.5-bin-hadoop3
-output/*
-checkpoint/*
+spark-streaming/output/*
+spark-streaming/checkpoint/*

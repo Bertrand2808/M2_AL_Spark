@@ -61,7 +61,7 @@ python ./utils/genlogs_v2.py --urls 1000 --rate 100 --format json | nc -lk 9999
 
 Ce terminal doit rester actif durant l'analyse, il ne faut donc pas le fermer.
 
-Dans le second terminal, vous avez deux options : 
+Dans le second terminal, vous avez deux options :
 1. via le script `run_spark_streaming.sh` qui nettoie les anciens fichiers et lance l'analyse proprement
 2. via `spark-submit` directement
 

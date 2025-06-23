@@ -33,9 +33,37 @@ def main():
         metavar=("OK", "NOTFOUND", "ERROR"),
         help="Répartition en pourcentages pour les codes 200, 404, 500"
     )
+    parser.add_argument(
+        "--mode", choices=["local", "production"], default="local",
+        help="Mode d'exécution: local (stdout) ou production (Kafka)"
+    )
+    parser.add_argument(
+        "--kafka-broker", default="kafka:9092",
+        help="Adresse du broker Kafka"
+    )
+    parser.add_argument(
+        "--kafka-topic", default="http-logs",
+        help="Topic Kafka pour les logs"
+    )
     args = parser.parse_args()
 
-    # Préparation des listes
+    # Import Kafka seulement si nécessaire
+    if args.mode == "production":
+        try:
+            from kafka import KafkaProducer
+            producer = KafkaProducer(
+                bootstrap_servers=[args.kafka_broker],
+                value_serializer=lambda x: json.dumps(x).encode('utf-8')
+            )
+            print(f"Connexion à Kafka: {args.kafka_broker}, topic: {args.kafka_topic}")
+        except ImportError:
+            print("Error: kafka-python package required for production mode")
+            print("Install with: pip install kafka-python")
+            return
+        except Exception as e:
+            print(f"Error connecting to Kafka: {e}")
+            return
+
     urls = [f"/resource/{i}" for i in range(1, args.urls + 1)]
     status_codes = [200, 404, 500]
     status_weights = args.status_dist
@@ -51,19 +79,27 @@ def main():
                 "url": random.choice(urls),
                 "status": random.choices(status_codes, weights=status_weights, k=1)[0]
             }
-            if args.format == "json":
-                print(json.dumps(entry), flush=True)
+            
+            if args.mode == "production":
+                producer.send(args.kafka_topic, value=entry)
+                if random.randint(1, 100) == 1:  # Log occasionally
+                    print(f"Sent to Kafka: {entry}")
             else:
-                # CSV délimité par ;
-                print(
-                    f"{entry['timestamp']};{entry['ip']};{entry['method']};"
-                    f"{entry['url']};{entry['status']}",
-                    flush=True
-                )
+                if args.format == "json":
+                    print(json.dumps(entry), flush=True)
+                else:
+                    # CSV délimité par ;
+                    print(
+                        f"{entry['timestamp']};{entry['ip']};{entry['method']};"
+                        f"{entry['url']};{entry['status']}",
+                        flush=True
+                    )
             if interval:
                 time.sleep(interval)
     except KeyboardInterrupt:
         print("\nArrêt du générateur de logs.")
+        if args.mode == "production":
+            producer.close()
 
 if __name__ == "__main__":
     main()

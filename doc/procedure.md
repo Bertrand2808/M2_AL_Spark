@@ -1,6 +1,14 @@
 # Procedure
 
-## Générer des logs
+## Modes d'exécution
+
+Le système supporte deux modes d'exécution :
+- **Local** : Utilise TCP/netcat comme précédemment
+- **Production** : Utilise Kafka pour la communication entre services
+
+## Mode Local (TCP)
+
+### Générer des logs
 
 Le script génère par défaut des logs en JSON (plus facile à parser) avec :
 
@@ -32,12 +40,11 @@ pour générer uniquement des erreurs 500 :
 python3 ./utils/genlogs_v2.py --urls 1000 --rate 1000 --format json --status-dist 0 0 100 | nc -lk 9999
 ```
 
-
-## Analyse des logs avec Spark Streaming
+### Analyse des logs avec Spark Streaming (Mode Local)
 
 Le script `log_analyzer.py` analyse en temps réel les logs générés et effectue les tâches suivantes :
 
-### Fonctionnalités
+#### Fonctionnalités
 - **Connexion TCP** : Se connecte au stream netcat sur le port 9999
 - **Filtrage des erreurs** : Capture uniquement les logs avec status HTTP >= 400 (erreurs 4xx et 5xx)
 - **Analyse temporelle** : Agrège les métriques par fenêtres de 30 secondes
@@ -48,7 +55,7 @@ Le script `log_analyzer.py` analyse en temps réel les logs générés et effect
 - **Sauvegarde** : Stocke toutes les erreurs au format JSON dans `output/errors/`
 - **Affichage temps réel** : Affiche les métriques agrégées toutes les 30 secondes
 
-### Lancement de l'analyse
+#### Lancement de l'analyse
 
 Il faut lancer deux terminaux distincts.
 
@@ -56,40 +63,89 @@ Dans le premier, la commande suivante doit être jouée :
 ```bash
 python ./utils/genlogs_v2.py --urls 1000 --rate 100 --format json | nc -lk 9999
 ```
-- La partie avant le symbole `|` génère les logs en continu au format JSON (ici 100 logs/sec avec 1000 URLs possibles)
-- La partie suivant le symbole `|` sert à rediriger ces logs vers le flux TCP écoutant sur le port 9999. Le flux restera actif tant qu'il n'est pas arrêté manuellement, ce qui est important pour lancer l'analyse Spark Streaming. (d'où la nécessité de lancer cette commande avant de lancer l'analyse Spark Streaming!)
-
-Ce terminal doit rester actif durant l'analyse, il ne faut donc pas le fermer.
 
 Dans le second terminal, vous avez deux options :
 1. via le script `run_spark_streaming.sh` qui nettoie les anciens fichiers et lance l'analyse proprement
 2. via `spark-submit` directement
 
 **Option 1 (recommandée) - Via le script `run_spark_streaming.sh`**
-Avant d'essayer d'exécuter le script, il faut le rendre exécutable (à faire qu'une seule fois !)
 ```bash
 chmod +x ./run_spark_streaming.sh
-```
-Une fois que le script est exécutable, il peut être exécuté :
-```bash
 ./run_spark_streaming.sh
 ```
-Si Spark n'est pas dans le PATH, le chemin peut être indiqué dans la commande :
-```bash
-./run_spark_streaming.sh ~/spark-3.5.5-bin-hadoop3/bin/spark-submit
-```
-Ce script supprime les anciens fichiers `output/errors/` et `checkpoint/errors/` qui peuvent parfois être source de problème, puis exécute le script `log_analyzer.py` via `spark_submit`.
 
 **Option 2 - Via `spark_submit`**
 ```bash
-spark-submit ./spark-streaming/log_analyzer.py
+spark-submit ./spark-streaming/log_analyzer.py --mode local
 ```
-C'est celle-ci qui va lancer l'analyse Spark Streaming, mais en cas de problème il faudra supprimer les répertoires `output/errors/` et `checkpoint/errors/` à la main.
 
-### Sortie attendue
-- **Console** : Métriques agrégées par fenêtre temporelle et status code
-- **Fichiers** : Logs d'erreur sauvegardés dans `output/errors/` au format JSON
-- **Checkpoints** : Points de contrôle Spark dans `checkpoint/errors/`
+## Mode Production (Kafka + Docker)
+
+### Prérequis
+- Docker et Docker Compose installés
+- Ports 9092 (Kafka) disponibles
+
+### Lancement complet avec Docker Compose
+
+```bash
+# Lancer l'infrastructure complète
+docker-compose up -d
+
+# Voir les logs en temps réel
+docker-compose logs -f log-analyzer
+
+# Arrêter tous les services
+docker-compose down
+```
+
+### Architecture en mode production
+
+1. **Zookeeper** : Coordination pour Kafka
+2. **Kafka** : Message broker avec topics `http-logs` et `alerts`
+3. **Kafka UI** : Interface web pour monitoring Kafka (http://localhost:8080)
+4. **Log Generator** : Génère des logs HTTP et les envoie au topic `http-logs`
+5. **Log Analyzer** : 
+   - Lit les logs depuis le topic `http-logs`
+   - Analyse les erreurs et génère des métriques
+   - Envoie les alertes au topic `alerts` quand > 100 erreurs/30s
+
+### Interface de monitoring Kafka UI
+
+Une interface web est disponible sur http://localhost:8080 pour :
+- Visualiser les topics et leurs partitions
+- Consulter les messages en temps réel
+- Surveiller les consommateurs et producteurs
+- Gérer la configuration Kafka
+
+### Commandes utiles pour le debugging
+
+```bash
+# Accéder à l'interface Kafka UI
+# Ouvrir http://localhost:8080 dans votre navigateur
+
+# Voir les topics Kafka
+docker exec -it $(docker-compose ps -q kafka) kafka-topics --bootstrap-server localhost:9092 --list
+
+# Lire les messages du topic http-logs
+docker exec -it $(docker-compose ps -q kafka) kafka-console-consumer --bootstrap-server localhost:9092 --topic http-logs --from-beginning
+
+# Lire les alertes
+docker exec -it $(docker-compose ps -q kafka) kafka-console-consumer --bootstrap-server localhost:9092 --topic alerts --from-beginning
+
+# Redémarrer un service spécifique
+docker-compose restart log-generator
+docker-compose restart log-analyzer
+```
+
+### Personnalisation des paramètres
+
+Pour modifier le taux de génération ou autres paramètres, éditer le `docker-compose.yml` :
+
+```yaml
+log-generator:
+  # ...existing code...
+  command: ["python", "genlogs_v2.py", "--mode", "production", "--rate", "500", "--urls", "2000", "--kafka-broker", "kafka:9092"]
+```
 
 ### Structure des données analysées
 ```json
@@ -99,6 +155,19 @@ C'est celle-ci qui va lancer l'analyse Spark Streaming, mais en cas de problème
   "method": "GET",
   "url": "/resource/42",
   "status": 404
+}
+```
+
+### Format des alertes envoyées au topic alerts
+```json
+{
+  "window_start": "2025-05-30T18:52:30.000Z",
+  "window_end": "2025-05-30T18:53:00.000Z",
+  "status": 404,
+  "error_count": 150,
+  "unique_ips": 25,
+  "alert": "ALERTE : Nombre d'erreurs élevé",
+  "alert_timestamp": "2025-05-30T18:53:05.123Z"
 }
 ```
 

@@ -135,6 +135,47 @@ docker exec -it $(docker-compose ps -q kafka) kafka-console-consumer --bootstrap
 # Redémarrer un service spécifique
 docker-compose restart log-generator
 docker-compose restart log-analyzer
+
+# Nettoyer complètement en cas de problème
+docker-compose down -v
+docker system prune -f
+docker-compose up -d
+```
+
+### Résolution des problèmes courants
+
+#### Erreur "Expected e.g. {\"topicA\":{\"0\":23,\"1\":-1}}, got -1"
+Cette erreur survient en cas de problème avec les offsets Kafka. Solution :
+```bash
+# Arrêter tous les services
+docker-compose down -v
+
+# Supprimer les volumes et checkpoints
+sudo rm -rf ./checkpoint ./output
+
+# Redémarrer
+docker-compose up -d
+```
+
+#### Services qui ne démarrent pas correctement
+```bash
+# Vérifier l'état des services
+docker-compose ps
+
+# Voir les logs détaillés
+docker-compose logs kafka
+docker-compose logs log-analyzer
+
+# Redémarrer un service spécifique
+docker-compose restart log-analyzer
+```
+
+#### Performance lente
+Le taux de génération de logs est réduit à 50 logs/seconde par défaut pour éviter la surcharge. Pour l'augmenter, modifier le docker-compose.yml :
+```yaml
+log-generator:
+  # ...existing code...
+  command: ["python", "genlogs_v2.py", "--mode", "production", "--rate", "100", "--urls", "1000", "--kafka-broker", "kafka:9092"]
 ```
 
 ### Personnalisation des paramètres

@@ -3,6 +3,10 @@ from pyspark.sql.functions import *
 from pyspark.sql.types import *
 import json
 import argparse
+import os
+import shutil
+import time
+import uuid
 
 def main():
     parser = argparse.ArgumentParser(description="Analyseur de logs HTTP")
@@ -16,10 +20,32 @@ def main():
     )
     args = parser.parse_args()
 
-    # Initialisation Spark
+    print(f"Démarrage en mode: {args.mode}")
+
+    # Créer des checkpoints uniques avec UUID pour éviter les conflits
+    unique_id = str(uuid.uuid4())[:8]
+    
+    # Nettoyage complet des checkpoints pour éviter les erreurs d'offset
+    if args.mode == "production":
+        checkpoint_base = f"/app/checkpoint/{unique_id}"
+        if os.path.exists("/app/checkpoint"):
+            print("Nettoyage complet des checkpoints...")
+            shutil.rmtree("/app/checkpoint")
+        
+        # Attendre que Kafka soit prêt
+        print("Attente de Kafka...")
+        time.sleep(15)
+    else:
+        checkpoint_base = f"checkpoint/{unique_id}"
+        if os.path.exists("checkpoint"):
+            print("Nettoyage complet des checkpoints...")
+            shutil.rmtree("checkpoint")
+
+    # Initialisation Spark avec configuration optimisée
     spark = SparkSession.builder \
-        .appName("LogAnalyzer") \
+        .appName(f"LogAnalyzer-{unique_id}") \
         .config("spark.sql.streaming.forceDeleteTempCheckpointLocation", "true") \
+        .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer") \
         .getOrCreate()
 
     spark.sparkContext.setLogLevel("WARN")
@@ -34,23 +60,33 @@ def main():
     ])
 
     if args.mode == "production":
-        # Lecture depuis Kafka
+        print(f"Connexion à Kafka: {args.kafka_broker}")
+        # Lecture depuis Kafka avec configuration robuste
         raw_logs = spark \
             .readStream \
             .format("kafka") \
             .option("kafka.bootstrap.servers", args.kafka_broker) \
             .option("subscribe", "http-logs") \
-            .option("startingOffsets", "latest") \
+            .option("startingOffsets", "earliest") \
+            .option("failOnDataLoss", "false") \
+            .option("kafka.consumer.group.id", f"log-analyzer-{unique_id}") \
+            .option("kafka.consumer.group.id", f"log-analyzer-{unique_id}") \
+            .option("maxOffsetsPerTrigger", "500") \
+            .option("kafka.session.timeout.ms", "30000") \
+            .option("kafka.request.timeout.ms", "40000") \
             .load()
 
-        # Parsing JSON et filtrage des erreurs
-        logs = raw_logs.select(
-            from_json(col("value").cast("string"), log_schema).alias("log")
-        ).select("log.*") \
-         .withColumn("timestamp", to_timestamp(col("timestamp"), "yyyy-MM-dd'T'HH:mm:ss.SSSSSSX")) \
-         .filter(col("status") >= 400)
+        # Parsing JSON avec gestion d'erreurs robuste
+        logs = raw_logs \
+            .selectExpr("CAST(value AS STRING) as json_string") \
+            .select(from_json(col("json_string"), log_schema).alias("log")) \
+            .stestelect("log.*") \
+            .filter(col("timestamp").isNotNull() & col("status").isNotNull()) \
+            .withColumn("timestamp", to_timestamp(col("timestamp"), "yyyy-MM-dd'T'HH:mm:ss.SSSSSS'Z'")) \
+            .filter(col("timestamp").isNotNull()) \
+            .filter(col("status") >= 400)
     else:
-        # Mode local - lecture TCP
+        print("Connexion TCP localhost:9999")
         lines = spark \
             .readStream \
             .format("socket") \
@@ -58,15 +94,17 @@ def main():
             .option("port", 9999) \
             .load()
 
-        logs = lines.select(
-            from_json(col("value"), log_schema).alias("log")
-        ).select("log.*") \
-         .withColumn("timestamp", to_timestamp(col("timestamp"), "yyyy-MM-dd'T'HH:mm:ss.SSSSSSX")) \
-         .filter(col("status") >= 400)
+        logs = lines \
+            .select(from_json(col("value"), log_schema).alias("log")) \
+            .select("log.*") \
+            .filter(col("timestamp").isNotNull() & col("status").isNotNull()) \
+            .withColumn("timestamp", to_timestamp(col("timestamp"), "yyyy-MM-dd'T'HH:mm:ss.SSSSSS'Z'")) \
+            .filter(col("timestamp").isNotNull()) \
+            .filter(col("status") >= 400)
 
-    # Ajout d'une fenêtre temporelle pour les métriques
+    # Metrics avec watermark
     windowed_metrics = logs \
-        .withWatermark("timestamp", "10 seconds") \
+        .withWatermark("timestamp", "30 seconds") \
         .groupBy(
             window(col("timestamp"), "30 seconds"),
             col("status")
@@ -77,9 +115,9 @@ def main():
             collect_list("url").alias("error_urls")
         )
 
-    # Alertes
+    # Alertes - seuil réduit pour test
     alerts = windowed_metrics \
-        .filter(col("error_count") > 100) \
+        .filter(col("error_count") > 5) \
         .withColumn("alert", lit("ALERTE : Nombre d'erreurs élevé")) \
         .withColumn("alert_timestamp", current_timestamp()) \
         .select(
@@ -92,51 +130,74 @@ def main():
             col("alert_timestamp")
         )
 
-    if args.mode == "production":
-        # Envoi des alertes vers Kafka
-        alert_query = alerts \
-            .select(to_json(struct("*")).alias("value")) \
+    # Démarrage des streams avec gestion d'erreurs simplifiée
+    queries = []
+
+    try:
+        # Stream 1: Affichage des métriques
+        print("Démarrage du stream des métriques...")
+        metrics_query = windowed_metrics \
             .writeStream \
-            .outputMode("append") \
-            .format("kafka") \
-            .option("kafka.bootstrap.servers", args.kafka_broker) \
-            .option("topic", "alerts") \
-            .option("checkpointLocation", "checkpoint/alerts") \
-            .trigger(processingTime="10 seconds") \
-            .start()
-    else:
-        # Mode local - affichage console
-        alert_query = alerts.writeStream \
-            .outputMode("append") \
+            .outputMode("update") \
             .format("console") \
             .option("truncate", False) \
-            .trigger(processingTime="10 seconds") \
+            .option("checkpointLocation", f"{checkpoint_base}/metrics") \
+            .trigger(processingTime="15 seconds") \
             .start()
+        queries.append(metrics_query)
 
-    # Sauvegarde des erreurs
-    errors_as_json = logs.select(to_json(struct("*")).alias("value"))
+        # Stream 2: Gestion des alertes
+        if args.mode == "production":
+            print("Démarrage du stream d'alertes vers Kafka...")
+            alert_query = alerts \
+                .select(to_json(struct("*")).alias("value")) \
+                .writeStream \
+                .outputMode("append") \
+                .format("kafka") \
+                .option("kafka.bootstrap.servers", args.kafka_broker) \
+                .option("topic", "alerts") \
+                .option("checkpointLocation", f"{checkpoint_base}/alerts") \
+                .trigger(processingTime="15 seconds") \
+                .start()
+        else:
+            print("Démarrage du stream d'alertes console...")
+            alert_query = alerts \
+                .writeStream \
+                .outputMode("append") \
+                .format("console") \
+                .option("truncate", False) \
+                .option("checkpointLocation", f"{checkpoint_base}/alerts") \
+                .trigger(processingTime="15 seconds") \
+                .start()
+        queries.append(alert_query)
 
-    error_query = errors_as_json.writeStream \
-        .outputMode("append") \
-        .format("text") \
-        .option("path", "output/errors") \
-        .option("checkpointLocation", "checkpoint/errors") \
-        .trigger(processingTime="10 seconds") \
-        .start()
+        # Stream 3: Sauvegarde des erreurs
+        print("Démarrage du stream de sauvegarde...")
+        errors_as_json = logs.select(to_json(struct("*")).alias("value"))
+        error_query = errors_as_json \
+            .writeStream \
+            .outputMode("append") \
+            .format("text") \
+            .option("path", "output/errors") \
+            .option("checkpointLocation", f"{checkpoint_base}/errors") \
+            .trigger(processingTime="15 seconds") \
+            .start()
+        queries.append(error_query)
 
-    # Affichage des métriques en temps réel
-    metrics_query = windowed_metrics \
-        .writeStream \
-        .outputMode("update") \
-        .format("console") \
-        .option("truncate", False) \
-        .trigger(processingTime="10 seconds") \
-        .start()
+        print("Tous les streams sont démarrés. En attente...")
 
-    # Attendre l'arrêt des streams
-    error_query.awaitTermination()
-    metrics_query.awaitTermination()
-    alert_query.awaitTermination()
+        # Attendre tous les streams
+        for query in queries:
+            query.awaitTermination()
+
+    except Exception as e:
+        print(f"Erreur dans le streaming: {e}")
+        # Arrêter proprement tous les streams
+        for query in queries:
+            if query.isActive:
+                query.stop()
+    finally:
+        spark.stop()
 
 if __name__ == "__main__":
     main()

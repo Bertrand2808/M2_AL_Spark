@@ -1,0 +1,108 @@
+version: '3.8'
+
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - chaussettes-network
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2181"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+    ports:
+      - "9092:9092"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    networks:
+      - chaussettes-network
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  kafka-topics-setup:
+    image: confluentinc/cp-kafka:7.4.0
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - chaussettes-network
+    restart: "no"
+    command: >
+      sh -c "
+        echo '⏳ Attente que Kafka soit disponible...' &&
+        until kafka-topics --bootstrap-server kafka:9092 --list 2>/dev/null; do
+          echo 'Kafka pas encore prêt...'; sleep 5;
+        done &&
+        echo '✅ Kafka disponible. Création des topics...' &&
+        kafka-topics --bootstrap-server kafka:9092 --create --topic http-logs --partitions 3 --replication-factor 1 --if-not-exists &&
+        kafka-topics --bootstrap-server kafka:9092 --create --topic alerts --partitions 2 --replication-factor 1 --if-not-exists &&
+        echo '🎉 Topics créés avec succès'"
+
+  log-generator:
+    build:
+      context: ./utils
+    depends_on:
+      - kafka-topics-setup
+    networks:
+      - chaussettes-network
+    environment:
+      - KAFKA_BROKER=kafka:9092
+    restart: unless-stopped
+    command: ["python", "genlogs_v2.py", "--mode", "production", "--rate", "50", "--urls", "1000", "--kafka-broker", "kafka:9092"]
+
+  log-analyzer:
+    build:
+      context: ./spark-streaming
+    depends_on:
+      - kafka-topics-setup
+      - log-generator
+    networks:
+      - chaussettes-network
+    volumes:
+      - ./output:/app/output
+      - ./checkpoint:/app/checkpoint
+    environment:
+      - KAFKA_BROKER=kafka:9092
+    restart: unless-stopped
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+    networks:
+      - chaussettes-network
+
+volumes:
+  kafka-data:
+
+networks:
+  chaussettes-network:
+    driver: bridge

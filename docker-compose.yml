@@ -70,13 +70,20 @@ services:
       - KAFKA_BROKER=kafka:9092
     restart: unless-stopped
     command: ["python", "genlogs_v2.py", "--mode", "production", "--rate", "50", "--urls", "1000", "--kafka-broker", "kafka:9092"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('kafka', 9092))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   log-analyzer:
     build:
       context: ./spark-streaming
     depends_on:
-      - kafka-topics-setup
-      - log-generator
+      kafka-topics-setup:
+        condition: service_completed_successfully
+      log-generator:
+        condition: service_healthy
     networks:
       - chaussettes-network
     volumes:
@@ -84,7 +91,11 @@ services:
       - ./checkpoint:/app/checkpoint
     environment:
       - KAFKA_BROKER=kafka:9092
+      - SPARK_DRIVER_MEMORY=1g
+      - SPARK_EXECUTOR_MEMORY=1g
     restart: unless-stopped
+    command: ["python", "log_analyzer.py", "--mode", "production", "--kafka-broker", "kafka:9092"]
+    mem_limit: 2g
 
   kafka-ui:
     image: provectuslabs/kafka-ui:latest

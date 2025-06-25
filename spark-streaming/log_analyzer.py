@@ -28,24 +28,43 @@ def main():
     # Nettoyage complet des checkpoints pour éviter les erreurs d'offset
     if args.mode == "production":
         checkpoint_base = f"/app/checkpoint/{unique_id}"
-        if os.path.exists("/app/checkpoint"):
-            print("Nettoyage complet des checkpoints...")
-            shutil.rmtree("/app/checkpoint")
+        
+        # Nettoyage sécurisé pour les volumes Docker
+        try:
+            if os.path.exists("/app/checkpoint"):
+                print("Nettoyage des checkpoints existants...")
+                # Ne pas supprimer le répertoire racine monté, seulement son contenu
+                for item in os.listdir("/app/checkpoint"):
+                    item_path = os.path.join("/app/checkpoint", item)
+                    if os.path.isdir(item_path):
+                        shutil.rmtree(item_path)
+                    else:
+                        os.remove(item_path)
+                print("Checkpoints nettoyés avec succès")
+        except Exception as e:
+            print(f"Attention: Impossible de nettoyer les checkpoints: {e}")
+            print("Continuons avec des nouveaux répertoires...")
         
         # Attendre que Kafka soit prêt
         print("Attente de Kafka...")
         time.sleep(15)
     else:
         checkpoint_base = f"checkpoint/{unique_id}"
-        if os.path.exists("checkpoint"):
-            print("Nettoyage complet des checkpoints...")
-            shutil.rmtree("checkpoint")
+        try:
+            if os.path.exists("checkpoint"):
+                print("Nettoyage complet des checkpoints...")
+                shutil.rmtree("checkpoint")
+        except Exception as e:
+            print(f"Attention: Impossible de nettoyer les checkpoints: {e}")
 
     # Initialisation Spark avec configuration optimisée
     spark = SparkSession.builder \
         .appName(f"LogAnalyzer-{unique_id}") \
         .config("spark.sql.streaming.forceDeleteTempCheckpointLocation", "true") \
         .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer") \
+        .config("spark.jars.packages", "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0") \
+        .config("spark.sql.adaptive.enabled", "true") \
+        .config("spark.sql.adaptive.coalescePartitions.enabled", "true") \
         .getOrCreate()
 
     spark.sparkContext.setLogLevel("WARN")
@@ -80,7 +99,7 @@ def main():
         logs = raw_logs \
             .selectExpr("CAST(value AS STRING) as json_string") \
             .select(from_json(col("json_string"), log_schema).alias("log")) \
-            .stestelect("log.*") \
+            .select("log.*") \
             .filter(col("timestamp").isNotNull() & col("status").isNotNull()) \
             .withColumn("timestamp", to_timestamp(col("timestamp"), "yyyy-MM-dd'T'HH:mm:ss.SSSSSS'Z'")) \
             .filter(col("timestamp").isNotNull()) \

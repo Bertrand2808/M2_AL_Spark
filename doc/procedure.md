@@ -136,6 +136,18 @@ docker exec -it $(docker-compose ps -q kafka) kafka-console-consumer --bootstrap
 docker-compose restart log-generator
 docker-compose restart log-analyzer
 
+# Rebuild complet des images et conteneurs
+# Arrêter tous les services
+docker-compose down
+
+# Supprimer les images existantes (optionnel mais recommandé)
+docker-compose rm -f
+docker image prune -f
+
+# Rebuilder et relancer avec force rebuild
+docker-compose build --no-cache
+docker-compose up -d
+
 # Nettoyer complètement en cas de problème
 docker-compose down -v
 docker system prune -f

@@ -2,3 +2,4 @@
 spark-3.5.5-bin-hadoop3
 spark-streaming/output/*
 spark-streaming/checkpoint/*
+checkpoint/

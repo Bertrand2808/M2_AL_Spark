@@ -89,7 +89,6 @@ def main():
             .option("startingOffsets", "earliest") \
             .option("failOnDataLoss", "false") \
             .option("kafka.consumer.group.id", f"log-analyzer-{unique_id}") \
-            .option("kafka.consumer.group.id", f"log-analyzer-{unique_id}") \
             .option("maxOffsetsPerTrigger", "500") \
             .option("kafka.session.timeout.ms", "30000") \
             .option("kafka.request.timeout.ms", "40000") \

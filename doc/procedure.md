@@ -91,6 +91,14 @@ spark-submit ./spark-streaming/log_analyzer.py --mode local
 # Lancer l'infrastructure complète
 docker-compose up -d
 
+# Vérifier que tous les services sont en cours d'exécution
+docker-compose ps
+
+# ✅ Vérification rapide que tout fonctionne :
+# 1. Kafka UI accessible sur http://localhost:8080
+# 2. Topics visibles dans l'interface
+# 3. Messages qui arrivent dans le topic 'http-logs'
+
 # Voir les logs en temps réel
 docker-compose logs -f log-analyzer
 
@@ -116,6 +124,8 @@ Une interface web est disponible sur http://localhost:8080 pour :
 - Consulter les messages en temps réel
 - Surveiller les consommateurs et producteurs
 - Gérer la configuration Kafka
+
+**✅ Note** : Kafka UI est maintenant entièrement fonctionnel avec SSL après la correction du montage des volumes.
 
 ### Commandes utiles pour le debugging
 

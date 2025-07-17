@@ -34,7 +34,6 @@ def main():
         try:
             if os.path.exists("/app/checkpoint"):
                 print("Nettoyage des checkpoints existants...")
-                # Ne pas supprimer le répertoire racine monté, seulement son contenu
                 for item in os.listdir("/app/checkpoint"):
                     item_path = os.path.join("/app/checkpoint", item)
                     if os.path.isdir(item_path):
@@ -44,11 +43,26 @@ def main():
                 print("Checkpoints nettoyés avec succès")
         except Exception as e:
             print(f"Attention: Impossible de nettoyer les checkpoints: {e}")
-            print("Continuons avec des nouveaux répertoires...")
 
         # Attendre que Kafka soit prêt
         print("Attente de Kafka...")
         time.sleep(15)
+        
+        # Test de connectivité Kafka
+        try:
+            print("Test de connectivité Kafka...")
+            import socket
+            host, port = args.kafka_broker.split(':')
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(5)
+            result = sock.connect_ex((host, int(port)))
+            sock.close()
+            if result == 0:
+                print("✓ Port Kafka accessible")
+            else:
+                print(f"⚠ Port Kafka non accessible: {result}")
+        except Exception as e:
+            print(f"⚠ Test de connectivité échoué: {e}")
     else:
         checkpoint_base = f"checkpoint/{unique_id}"
         try:
@@ -66,6 +80,10 @@ def main():
         .config("spark.jars.packages", "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0") \
         .config("spark.sql.adaptive.enabled", "true") \
         .config("spark.sql.adaptive.coalescePartitions.enabled", "true") \
+        .config("spark.executor.memory", "1g") \
+        .config("spark.driver.memory", "1g") \
+        .config("spark.executor.cores", "1") \
+        .config("spark.sql.streaming.kafka.useDeprecatedOffsetFetching", "false") \
         .getOrCreate()
 
     spark.sparkContext.setLogLevel("WARN")
@@ -81,19 +99,33 @@ def main():
 
     if args.mode == "production":
         print(f"Connexion à Kafka: {args.kafka_broker}")
-        # Lecture depuis Kafka avec configuration robuste
-        raw_logs = spark \
-            .readStream \
-            .format("kafka") \
-            .option("kafka.bootstrap.servers", args.kafka_broker) \
-            .option("subscribe", "http-logs") \
-            .option("startingOffsets", "earliest") \
-            .option("failOnDataLoss", "false") \
-            .option("kafka.consumer.group.id", f"log-analyzer-{unique_id}") \
-            .option("maxOffsetsPerTrigger", "500") \
-            .option("kafka.session.timeout.ms", "30000") \
-            .option("kafka.request.timeout.ms", "40000") \
-            .load()
+        
+        # Configuration Kafka PLAINTEXT uniquement pour le port 9092
+        kafka_options = {
+            "kafka.bootstrap.servers": args.kafka_broker,
+            "subscribe": "http-logs",
+            "startingOffsets": "latest",
+            "failOnDataLoss": "false",
+            "kafka.consumer.group.id": f"log-analyzer-{unique_id}",
+            "maxOffsetsPerTrigger": "100",
+            "kafka.session.timeout.ms": "30000",
+            "kafka.request.timeout.ms": "40000",
+            "kafka.connections.max.idle.ms": "300000",
+            # Augmenter les limites de taille des messages pour correspondre au broker
+            "kafka.fetch.max.bytes": "1073741824",  # 1GB
+            "kafka.max.partition.fetch.bytes": "1073741824",  # 1GB
+            "kafka.consumer.heartbeat.interval.ms": "3000",
+            "kafka.consumer.max.poll.interval.ms": "300000",
+            # Forcer PLAINTEXT pour le port 9092
+            "kafka.security.protocol": "PLAINTEXT"
+        }
+        
+        print("Configuration: Mode PLAINTEXT sur port 9092")
+        
+        raw_logs = spark.readStream.format("kafka")
+        for key, value in kafka_options.items():
+            raw_logs = raw_logs.option(key, value)
+        raw_logs = raw_logs.load()
 
         # Parsing JSON avec gestion d'erreurs robuste
         logs = raw_logs \
@@ -136,7 +168,7 @@ def main():
         collect_list("url").alias("error_urls")
     )
 
-    # Alertes - seuil réduit pour test
+    # Alertes
     alerts = windowed_metrics.filter(
         col("error_count") > 5
     ).withColumn(
@@ -155,7 +187,7 @@ def main():
         col("alert_timestamp")
     )
 
-    # Démarrage des streams avec gestion d'erreurs simplifiée
+    # Démarrage des streams
     queries = []
 
     try:
@@ -179,20 +211,19 @@ def main():
         # Stream 2: Gestion des alertes
         if args.mode == "production":
             print("Démarrage du stream d'alertes vers Kafka...")
-            alert_query = alerts.select(to_json(struct("*")).alias("value")).writeStream.outputMode(
-                "append"
-            ).format("kafka").option(
-                "kafka.bootstrap.servers",
-                args.kafka_broker
-            ).option(
-                "topic",
-                "alerts"
-            ).option(
-                "checkpointLocation",
-                f"{checkpoint_base}/alerts"
-            ).trigger(
-                processingTime="15 seconds"
-            ).start()
+            
+            # Configuration PLAINTEXT pour les alertes aussi
+            alert_kafka_options = {
+                "kafka.bootstrap.servers": args.kafka_broker,
+                "topic": "alerts",
+                "kafka.security.protocol": "PLAINTEXT"
+            }
+            
+            alert_stream = alerts.select(to_json(struct("*")).alias("value")).writeStream.outputMode("append").format("kafka")
+            for key, value in alert_kafka_options.items():
+                alert_stream = alert_stream.option(key, value)
+            
+            alert_query = alert_stream.option("checkpointLocation", f"{checkpoint_base}/alerts").trigger(processingTime="15 seconds").start()
         else:
             print("Démarrage du stream d'alertes console...")
             alert_query = alerts.writeStream.outputMode(
@@ -231,7 +262,6 @@ def main():
 
     except Exception as e:
         print(f"Erreur dans le streaming: {e}")
-        # Arrêter proprement tous les streams
         for query in queries:
             if query.isActive:
                 query.stop()

@@ -58,7 +58,28 @@ keytool -keystore spark.client.keystore.jks -alias spark-client -import \
 keytool -keystore spark.client.truststore.jks -alias $CA_ALIAS -import \
   -file ca.crt -storepass $PASS -noprompt
 
+# === 4. Fichiers de configuration additionnels ===
+echo "Création des fichiers de configuration SSL..."
+
+# Fichier de configuration client pour Kafka
+cat > client.properties << EOF
+security.protocol=SSL
+ssl.keystore.location=/etc/kafka/secrets/spark.client.keystore.jks
+ssl.keystore.password=$PASS
+ssl.key.password=$PASS
+ssl.truststore.location=/etc/kafka/secrets/spark.client.truststore.jks
+ssl.truststore.password=$PASS
+ssl.endpoint.identification.algorithm=
+EOF
+
+# Fichiers de mots de passe pour Kafka (requis par certaines versions)
+echo "$PASS" > password
+echo "$PASS" > keystore_password
+echo "$PASS" > truststore_password
+echo "$PASS" > key_password
+
 echo
 echo "=== Terminé ! Tous les certificats, keystore et truststore sont dans le dossier $DIR ==="
 echo "Mot de passe par défaut : $PASS"
+echo "Fichiers créés :"
 ls -l "$DIR"

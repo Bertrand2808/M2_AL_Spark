@@ -21,6 +21,14 @@ RUN curl -L -o /opt/bitnami/spark/jars/spark-token-provider-kafka-0-10_2.12-3.5.
 RUN curl -L -o /opt/bitnami/spark/jars/commons-pool2-2.11.1.jar \
     https://repo1.maven.org/maven2/org/apache/commons/commons-pool2/2.11.1/commons-pool2-2.11.1.jar
 
+# Configuration JVM pour optimiser la mémoire
+ENV SPARK_DRIVER_MEMORY=1g
+ENV SPARK_EXECUTOR_MEMORY=1g
+ENV PYSPARK_DRIVER_PYTHON=python3
+ENV PYSPARK_PYTHON=python3
+# Options JVM pour limiter la consommation mémoire
+ENV SPARK_SUBMIT_OPTS="-Xmx1g -Xms512m -XX:MaxMetaspaceSize=256m"
+
 COPY log_analyzer.py /app/
 
 WORKDIR /app
